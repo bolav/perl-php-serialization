@@ -1,6 +1,7 @@
 package PHP::Serialization;
 use strict;
 use warnings;
+use B ();
 use Exporter ();
 use Scalar::Util qw/blessed/;
 use Carp qw(croak confess carp);
@@ -448,14 +449,37 @@ sub _encode {
         }
     }
     elsif ( $type eq 'obj' ) {
+        # hijack the JSON module's method for converting objects to non-objects.
+        if ($val->can('TO_JSON')) {
+            return $self->encode($val->TO_JSON);
+        }
         my $class = ref($val);
         $class =~ /(\w+)$/;
         my $subclass = $1;
-        $buffer .= sprintf('O:%d:"%s":%d:', length($subclass), $subclass, scalar(keys %{$val})) . '{';
-        foreach ( %{$val} ) {
-            $buffer .= $self->encode($_);
+        my $b_obj = B::svref_2object( $val );
+        if ( $b_obj->isa('B::HV') ) {
+            $buffer .= sprintf('O:%d:"%s":%d:', length($subclass), $subclass, scalar(keys %{$val})) . '{';
+            foreach ( %{$val} ) {
+                $buffer .= $self->encode($_);
+            }
+            $buffer .= '}';
         }
-        $buffer .= '}';
+        elsif ($b_obj->isa('B::AV')) {
+            # PHP has no equivalent for blessed arrayrefs, so just encode as an array.
+            $buffer .= sprintf('a:%d:',($#{$val}+1)) . '{';
+            map { # Ewww
+                $buffer .= $self->encode($_);
+                $buffer .= $self->encode($$val[$_]);
+            } 0..$#{$val};
+            $buffer .= '}';
+        }
+        elsif ($b_obj->isa('B::PVMG')) {
+            # PHP has no equivalent for blessed scalars, so just encode as a string.
+            $buffer .= sprintf('s:%d:"%s";', length($$val), $$val);
+        }
+        else {
+            confess "Unknown object type!";
+        }
     }
     else {
         confess "Unknown encode type!";
